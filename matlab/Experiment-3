@@ -1,0 +1,173 @@
+
+%% Experiment 3: Multipath Channel and Cyclic Prefix
+% Fresh experiment: fixed multipath channel, no AWGN.
+% Compare OFDM reception with and without a cyclic prefix.
+
+clear;
+clc;
+close all;
+
+rng(7, "twister");
+
+%% 1. OFDM parameters
+Nfft = 64;
+Nsym = 1000;
+Ncp = 8;
+bitsPerSymbol = 2;
+
+%% 2. Fixed multipath channel
+% Three causal paths with delays of 0, 1 and 2 samples.
+h = [1 0.5 0.25];
+h = h / norm(h);
+
+% Channel frequency response at OFDM subcarrier frequencies
+H = fft(h, Nfft).';
+
+assert(all(abs(H) > 1e-10), ...
+    "Channel has a near-zero frequency response bin.");
+
+channelDelay = length(h) - 1;
+
+fprintf("Channel taps          : %d\n", length(h));
+fprintf("Maximum excess delay  : %d samples\n", channelDelay);
+fprintf("Cyclic prefix length  : %d samples\n\n", Ncp);
+
+%% 3. Generate QPSK data
+numBits = Nfft * Nsym * bitsPerSymbol;
+txBits = randi([0 1], numBits, 1);
+
+bitPairs = reshape(txBits, 2, []);
+
+txQPSK = ((1 - 2*bitPairs(1,:)) + ...
+    1j*(1 - 2*bitPairs(2,:))) / sqrt(2);
+
+txQPSK = reshape(txQPSK, Nfft, Nsym);
+
+%% 4. OFDM modulation
+txOFDM = ifft(txQPSK, Nfft, 1);
+
+%% CASE A: No cyclic prefix
+% Serialize all OFDM symbols and pass them through the channel.
+
+txStreamA = txOFDM(:);
+rxStreamA = filter(h, 1, txStreamA);
+
+rxGridA = zeros(Nfft, Nsym);
+
+for m = 1:Nsym
+    idx = (m-1)*Nfft + (1:Nfft);
+
+    % Extract the nominal symbol interval
+    rxBlock = rxStreamA(idx);
+
+    rxGridA(:,m) = fft(rxBlock, Nfft);
+end
+
+% Zero-forcing frequency-domain equalization
+eqGridA = rxGridA ./ H;
+
+%% CASE B: Cyclic prefix
+% Add a CP to each OFDM symbol before serialization.
+
+txWithCP = [txOFDM(end-Ncp+1:end,:); txOFDM];
+txStreamB = txWithCP(:);
+
+rxStreamB = filter(h, 1, txStreamB);
+
+rxGridB = zeros(Nfft, Nsym);
+
+blockLength = Nfft + Ncp;
+
+for m = 1:Nsym
+    % Skip the CP and extract Nfft samples
+    startIdx = (m-1)*blockLength + Ncp + 1;
+    idx = startIdx:(startIdx + Nfft - 1);
+
+    rxBlock = rxStreamB(idx);
+
+    rxGridB(:,m) = fft(rxBlock, Nfft);
+end
+
+% Zero-forcing frequency-domain equalization
+eqGridB = rxGridB ./ H;
+
+%% 5. Recover bits
+rxBitsA = zeros(numBits, 1);
+rxBitsB = zeros(numBits, 1);
+
+% Case A: no CP
+bitsA = zeros(2, numel(eqGridA));
+bitsA(1,:) = real(eqGridA(:)) < 0;
+bitsA(2,:) = imag(eqGridA(:)) < 0;
+rxBitsA = bitsA(:);
+
+% Case B: with CP
+bitsB = zeros(2, numel(eqGridB));
+bitsB(1,:) = real(eqGridB(:)) < 0;
+bitsB(2,:) = imag(eqGridB(:)) < 0;
+rxBitsB = bitsB(:);
+
+%% 6. Calculate BER and normalized RMS EVM
+BER_A = mean(txBits ~= rxBitsA);
+BER_B = mean(txBits ~= rxBitsB);
+
+EVM_A = sqrt(mean(abs(eqGridA(:)-txQPSK(:)).^2) / ...
+    mean(abs(txQPSK(:)).^2));
+
+EVM_B = sqrt(mean(abs(eqGridB(:)-txQPSK(:)).^2) / ...
+    mean(abs(txQPSK(:)).^2));
+
+%% 7. Display results
+fprintf("===== EXPERIMENT 3 RESULTS =====\n");
+fprintf("Transmitted bits      : %d\n", numBits);
+
+fprintf("\nCASE A: NO CYCLIC PREFIX\n");
+fprintf("BER                   : %.6g\n", BER_A);
+fprintf("Normalized RMS EVM    : %.6g\n", EVM_A);
+
+fprintf("\nCASE B: WITH CYCLIC PREFIX\n");
+fprintf("BER                   : %.6g\n", BER_B);
+fprintf("Normalized RMS EVM    : %.6g\n", EVM_B);
+
+%% 8. Validation checks
+fprintf("\n===== VALIDATION =====\n");
+
+if Ncp >= channelDelay
+    fprintf("CP length check       : PASSED\n");
+else
+    fprintf("CP length check       : FAILED\n");
+end
+
+if BER_B == 0 && EVM_B < 1e-10
+    fprintf("CP reception check    : PASSED\n");
+else
+    fprintf("CP reception check    : FAILED - inspect results\n");
+end
+
+if EVM_A > EVM_B
+    fprintf("CP comparison         : PASSED\n");
+else
+    fprintf("CP comparison         : Unexpected result - inspect\n");
+end
+
+%% 9. Visualize equalized constellation errors
+figure;
+
+subplot(1,2,1);
+plot(real(eqGridA(:)), imag(eqGridA(:)), '.');
+grid on;
+axis equal;
+xlabel('In-phase');
+ylabel('Quadrature');
+title('No CP: Equalized Constellation');
+
+subplot(1,2,2);
+plot(real(eqGridB(:)), imag(eqGridB(:)), '.');
+grid on;
+axis equal;
+xlabel('In-phase');
+ylabel('Quadrature');
+title('With CP: Equalized Constellation');
+
+fprintf("\nExperiment 3 complete.\n");
+
