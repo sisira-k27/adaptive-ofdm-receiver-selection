@@ -1,0 +1,118 @@
+
+%% Experiment 4: Pilot-Based LS Channel Estimation
+% Fresh experiment: estimate a multipath channel using pilot subcarriers.
+% No AWGN. Perfect timing and a static channel.
+
+clear;
+clc;
+close all;
+
+rng(7, "twister");
+
+%% 1. OFDM parameters
+Nfft = 64;
+Ncp = 8;
+Nsym = 1;
+
+% Pilot spacing must be suitable for the channel delay spread.
+pilotSpacing = 4;
+pilotIdx = 1:pilotSpacing:Nfft;
+dataIdx = setdiff(1:Nfft, pilotIdx);
+
+%% 2. Static multipath channel
+h = [1, 0.5, 0.25];
+h = h / norm(h);
+
+Htrue = fft(h, Nfft).';
+
+%% 3. Generate pilot and data symbols
+% Known QPSK pilots
+pilotBits = randi([0 1], 2, length(pilotIdx));
+pilotSymbols = ((1 - 2*pilotBits(1,:)) + ...
+    1j*(1 - 2*pilotBits(2,:))) / sqrt(2);
+
+% Random QPSK data on the remaining subcarriers
+dataBits = randi([0 1], 2, length(dataIdx));
+dataSymbols = ((1 - 2*dataBits(1,:)) + ...
+    1j*(1 - 2*dataBits(2,:))) / sqrt(2);
+
+X = zeros(Nfft, 1);
+X(pilotIdx) = pilotSymbols.';
+X(dataIdx) = dataSymbols.';
+
+%% 4. OFDM modulation and cyclic prefix
+x = ifft(X, Nfft);
+xCP = [x(end-Ncp+1:end); x];
+
+%% 5. Pass through the channel
+% Channel memory is shorter than the cyclic prefix.
+yFull = filter(h, 1, xCP);
+
+% Remove CP and recover the OFDM symbol
+y = yFull(Ncp+1:Ncp+Nfft);
+Y = fft(y, Nfft);
+
+%% 6. LS estimate at pilot locations
+HlsPilot = Y(pilotIdx) ./ X(pilotIdx);
+
+%% 7. Interpolate channel estimate over all subcarriers
+Hls = interp1(pilotIdx(:), HlsPilot(:), ...
+    (1:Nfft).', "linear", "extrap");
+
+%% 8. Calculate estimation error
+NMSE = sum(abs(Hls - Htrue).^2) / sum(abs(Htrue).^2);
+
+pilotNMSE = sum(abs(HlsPilot - Htrue(pilotIdx)).^2) / ...
+    sum(abs(Htrue(pilotIdx)).^2);
+
+fprintf("===== EXPERIMENT 4: LS CHANNEL ESTIMATION =====\n");
+fprintf("FFT size               : %d\n", Nfft);
+fprintf("Cyclic prefix          : %d samples\n", Ncp);
+fprintf("Pilot count            : %d\n", length(pilotIdx));
+fprintf("Data subcarriers       : %d\n", length(dataIdx));
+fprintf("Pilot NMSE             : %.6e\n", pilotNMSE);
+fprintf("Full-band NMSE         : %.6e\n", NMSE);
+
+%% 9. Plot actual and estimated channel responses
+figure;
+
+subplot(2,1,1);
+plot(1:Nfft, abs(Htrue), 'k-', 'LineWidth', 1.5);
+hold on;
+plot(1:Nfft, abs(Hls), 'b--', 'LineWidth', 1.5);
+plot(pilotIdx, abs(HlsPilot), 'ro', ...
+    'MarkerFaceColor', 'r');
+grid on;
+xlabel('Subcarrier index');
+ylabel('Magnitude');
+title('True vs LS-Estimated Channel Magnitude');
+legend('True channel', 'Interpolated LS estimate', ...
+    'Pilot estimates', 'Location', 'best');
+
+subplot(2,1,2);
+plot(1:Nfft, angle(Htrue), 'k-', 'LineWidth', 1.5);
+hold on;
+plot(1:Nfft, angle(Hls), 'b--', 'LineWidth', 1.5);
+grid on;
+xlabel('Subcarrier index');
+ylabel('Phase (radians)');
+title('True vs LS-Estimated Channel Phase');
+legend('True channel', 'LS estimate', 'Location', 'best');
+
+%% 10. Validation
+fprintf("\n===== VALIDATION =====\n");
+
+if pilotNMSE < 1e-20
+    fprintf("Pilot LS estimate      : PASSED\n");
+else
+    fprintf("Pilot LS estimate      : Inspect numerical error\n");
+end
+
+if NMSE < 0.05
+    fprintf("Interpolated estimate  : PASSED (NMSE < 0.05)\n");
+else
+    fprintf("Interpolated estimate  : Inspect interpolation accuracy\n");
+end
+
+fprintf("Experiment 4 complete.\n");
+
