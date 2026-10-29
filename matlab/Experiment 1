@@ -1,0 +1,72 @@
+
+%% Experiment 1: Ideal OFDM Loopback
+% Fresh baseline: QPSK -> IFFT -> FFT -> QPSK demapping
+% No channel, noise, equalization, or previous results.
+
+clear;
+clc;
+close all;
+
+rng(7, "twister");
+
+%% 1. System parameters
+Nfft = 64;             % Number of OFDM subcarriers
+Nsym = 1000;           % Number of OFDM symbols
+bitsPerSymbol = 2;     % QPSK carries 2 bits per symbol
+
+%% 2. Generate random information bits
+numBits = Nfft * Nsym * bitsPerSymbol;
+txBits = randi([0 1], numBits, 1);
+
+% Group bits into pairs: I bit, Q bit
+bitPairs = reshape(txBits, bitsPerSymbol, []);
+
+%% 3. QPSK modulation
+% Gray-labelled QPSK, normalized to unit average symbol energy
+I = 1 - 2 * bitPairs(1, :);
+Q = 1 - 2 * bitPairs(2, :);
+
+txQPSK = (I + 1j * Q) / sqrt(2);
+
+% Arrange one OFDM symbol per column
+txQPSK = reshape(txQPSK, Nfft, Nsym);
+
+%% 4. OFDM modulation
+txOFDM = ifft(txQPSK, Nfft, 1);
+
+%% 5. Ideal channel
+% No noise or distortion
+rxOFDM = txOFDM;
+
+%% 6. OFDM demodulation
+rxQPSK = fft(rxOFDM, Nfft, 1);
+
+%% 7. QPSK demodulation
+rxBitsMatrix = zeros(2, numel(rxQPSK));
+
+rxBitsMatrix(1, :) = real(rxQPSK(:)) < 0;
+rxBitsMatrix(2, :) = imag(rxQPSK(:)) < 0;
+
+rxBits = rxBitsMatrix(:);
+
+%% 8. Validate results
+numErrors = sum(txBits ~= rxBits);
+BER = numErrors / numBits;
+
+maxSymbolError = max(abs(txQPSK(:) - rxQPSK(:)));
+
+fprintf("===== EXPERIMENT 1: IDEAL OFDM LOOPBACK =====\n");
+fprintf("FFT size              : %d\n", Nfft);
+fprintf("OFDM symbols          : %d\n", Nsym);
+fprintf("Total transmitted bits: %d\n", numBits);
+fprintf("Bit errors            : %d\n", numErrors);
+fprintf("BER                   : %.6g\n", BER);
+fprintf("Maximum symbol error  : %.3e\n", maxSymbolError);
+
+assert(numErrors == 0, ...
+    "Validation failed: transmitted and received bits differ.");
+
+assert(maxSymbolError < 1e-10, ...
+    "Validation failed: reconstruction error is too large.");
+
+fprintf("VALIDATION PASSED: ideal OFDM loopback works.\n");
