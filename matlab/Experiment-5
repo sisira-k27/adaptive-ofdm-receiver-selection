@@ -1,0 +1,175 @@
+
+%% Experiment 5: LS Channel Estimation Under AWGN
+% Compare linear and PCHIP interpolation.
+% Static multipath channel, cyclic prefix, and pilot-based LS estimation.
+
+clear;
+clc;
+close all;
+
+rng(7, "twister");
+
+%% 1. System parameters
+Nfft = 64;
+Ncp = 8;
+Nsym = 500;
+SNRdB = 0:5:30;
+
+pilotSpacing = 4;
+pilotIdx = 1:pilotSpacing:Nfft;
+dataIdx = setdiff(1:Nfft, pilotIdx);
+
+%% 2. Define the fixed multipath channel
+h = [1, 0.5, 0.25];
+h = h / norm(h);
+
+Htrue = fft(h, Nfft).';
+
+assert(Ncp >= length(h)-1, ...
+    "Cyclic prefix must cover the channel memory.");
+
+%% 3. Generate pilot and data symbols
+% Unit-magnitude pilot symbols
+pilotSymbols = ones(length(pilotIdx), Nsym);
+
+% Random QPSK data on non-pilot subcarriers
+dataBits = randi([0 1], 2, length(dataIdx), Nsym);
+
+dataSymbols = ((1 - 2*dataBits(1,:,:)) + ...
+    1j*(1 - 2*dataBits(2,:,:))) / sqrt(2);
+
+X = zeros(Nfft, Nsym);
+X(pilotIdx,:) = pilotSymbols;
+X(dataIdx,:) = reshape(dataSymbols, length(dataIdx), Nsym);
+
+%% 4. OFDM modulation and cyclic prefix
+x = ifft(X, Nfft, 1);
+xCP = [x(end-Ncp+1:end,:); x];
+
+%% 5. Initialize performance metrics
+NMSEpilot = zeros(size(SNRdB));
+NMSEfullLinear = zeros(size(SNRdB));
+NMSEfullPchip = zeros(size(SNRdB));
+
+%% 6. Simulate the channel at each SNR
+% Pass through the static channel once; add independent noise per SNR.
+rxClean = filter(h, 1, xCP);
+
+for k = 1:length(SNRdB)
+
+    snrLinear = 10^(SNRdB(k)/10);
+
+    % Noise variance per complex time-domain sample.
+    % This defines SNR relative to the nominal unit-energy
+    % subcarrier symbols, with the MATLAB IFFT scaling included.
+    noiseVariance = 1 / (Nfft * snrLinear);
+
+    noise = sqrt(noiseVariance/2) * ...
+        (randn(size(rxClean)) + ...
+         1j*randn(size(rxClean)));
+
+    rxNoisy = rxClean + noise;
+
+    %% 7. Remove cyclic prefix and perform FFT
+    rxUseful = rxNoisy(Ncp+1:Ncp+Nfft,:);
+    Y = fft(rxUseful, Nfft, 1);
+
+    %% 8. LS channel estimates at pilot locations
+    HlsPilotPerSymbol = Y(pilotIdx,:) ./ pilotSymbols;
+
+    % Average pilot estimates across OFDM symbols
+    HlsPilot = mean(HlsPilotPerSymbol, 2);
+
+    %% 9. Interpolate across the full frequency band
+    HlsLinear = interp1(pilotIdx(:), HlsPilot(:), ...
+        (1:Nfft).', "linear", "extrap");
+
+    HlsPchip = interp1(pilotIdx(:), HlsPilot(:), ...
+        (1:Nfft).', "pchip", "extrap");
+
+    %% 10. Calculate normalized mean-square error
+    channelEnergy = sum(abs(Htrue).^2);
+
+    NMSEpilot(k) = sum(abs( ...
+        HlsPilot - Htrue(pilotIdx)).^2) / ...
+        sum(abs(Htrue(pilotIdx)).^2);
+
+    NMSEfullLinear(k) = sum(abs( ...
+        HlsLinear - Htrue).^2) / channelEnergy;
+
+    NMSEfullPchip(k) = sum(abs( ...
+        HlsPchip - Htrue).^2) / channelEnergy;
+
+        fprintf('SNR = %2d dB | Pilot NMSE = %.6e | Linear NMSE = %.6e | PCHIP NMSE = %.6e\n', ...
+        SNRdB(k), NMSEpilot(k), NMSEfullLinear(k), NMSEfullPchip(k));
+end
+
+%% 11. Plot noisy estimation performance
+figure;
+
+semilogy(SNRdB, NMSEpilot, 'bo-', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'b');
+hold on;
+
+semilogy(SNRdB, NMSEfullLinear, 'rs--', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'r');
+
+semilogy(SNRdB, NMSEfullPchip, 'md-.', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'm');
+
+grid on;
+xlabel('SNR (dB)');
+ylabel('Normalized Mean-Square Error (NMSE)');
+title('LS Channel Estimation: Linear vs PCHIP');
+legend('Pilot LS NMSE', 'Linear interpolation', ...
+    'PCHIP interpolation', 'Location', 'southwest');
+
+%% 12. Noiseless interpolation error floor
+% Use exact channel values at pilot locations.
+HpilotExact = Htrue(pilotIdx);
+
+HlinearExact = interp1(pilotIdx(:), HpilotExact(:), ...
+    (1:Nfft).', "linear", "extrap");
+
+HpchipExact = interp1(pilotIdx(:), HpilotExact(:), ...
+    (1:Nfft).', "pchip", "extrap");
+
+floorLinear = sum(abs(HlinearExact - Htrue).^2) / ...
+    channelEnergy;
+
+floorPchip = sum(abs(HpchipExact - Htrue).^2) / ...
+    channelEnergy;
+
+fprintf("\n===== INTERPOLATION FLOOR DIAGNOSTIC =====\n");
+fprintf("Noiseless linear NMSE : %.6e\n", floorLinear);
+fprintf("Noiseless PCHIP NMSE  : %.6e\n", floorPchip);
+
+%% 13. Validation
+fprintf("\n===== EXPERIMENT 5 VALIDATION =====\n");
+
+if all(diff(NMSEpilot) < 0)
+    fprintf("Pilot NMSE trend      : PASSED\n");
+else
+    fprintf("Pilot NMSE trend      : Inspect statistical variation\n");
+end
+
+if all(diff(NMSEfullLinear) < 0)
+    fprintf("Linear NMSE trend     : PASSED\n");
+else
+    fprintf("Linear NMSE trend     : Error floor or fluctuation observed\n");
+end
+
+if all(diff(NMSEfullPchip) < 0)
+    fprintf("PCHIP NMSE trend      : PASSED\n");
+else
+    fprintf("PCHIP NMSE trend      : Error floor or fluctuation observed\n");
+end
+
+if floorPchip < floorLinear
+    fprintf("Noiseless interpolation: PCHIP has lower NMSE\n");
+else
+    fprintf("Noiseless interpolation: Linear has lower or equal NMSE\n");
+end
+
+fprintf("Experiment 5 complete.\n");
+
