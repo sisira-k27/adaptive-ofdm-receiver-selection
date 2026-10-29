@@ -1,0 +1,16 @@
+OFDM project — available plot images
+
+This folder contains the plot images currently available from the prior project archive, organized and renamed by experiment.
+
+Important provenance note: these files are PNG images/screenshots of reported outputs. The original MATLAB .fig files and raw MATLAB-exported figures were not present in the available files, so I cannot certify these as direct exports from MATLAB. Do not describe them as original MATLAB exports or use them as final publication figures without checking them against your current MATLAB runs.
+
+Included plots:
+- exp02_ber_vs_snr.png
+- exp03_no_cp_vs_with_cp.png
+- exp03_equalized_constellations.png
+- exp04_true_vs_ls_channel.png
+- exp05_ls_nmse_vs_snr.png
+- exp05_linear_vs_pchip_nmse.png
+- exp05_interpolation_floor_diagnostic.png
+- exp06_ls_vs_lmmse_nmse.png
+- exp07_covariance_mismatch_nmse.png
