@@ -1,0 +1,193 @@
+
+%% Experiment 6: LS vs LMMSE Channel Estimation
+% Fresh experiment with a frequency-selective Rayleigh fading channel.
+% Each OFDM symbol gets an independent channel realization.
+% LS uses pilot estimates + linear/PCHIP interpolation.
+% LMMSE uses the known channel covariance and noise variance.
+
+clear;
+clc;
+close all;
+
+rng(42, "twister");
+
+%% 1. OFDM parameters
+Nfft = 64;
+Ncp = 8;
+Nsym = 2000;
+SNRdB = 0:5:30;
+
+pilotSpacing = 4;
+pilotIdx = 1:pilotSpacing:Nfft;
+dataIdx = setdiff(1:Nfft, pilotIdx);
+
+Np = length(pilotIdx);
+Nd = length(dataIdx);
+L = 3;
+
+%% 2. Channel power-delay profile
+% Relative average powers for three channel taps
+tapPower = [1; 0.5; 0.25];
+tapPower = tapPower / sum(tapPower);
+
+assert(Ncp >= L-1, ...
+    "Cyclic prefix must cover the channel memory.");
+
+%% 3. Construct theoretical channel covariance
+% H = F*h, where h contains independent complex Gaussian taps.
+% R_H = E[H*H'] = F*diag(tapPower)*F'
+
+subcarrierIndex = (0:Nfft-1).';
+tapIndex = 0:L-1;
+
+Fchannel = exp(-1j*2*pi/Nfft * ...
+    (subcarrierIndex * tapIndex));
+
+Rchannel = Fchannel * diag(tapPower) * Fchannel';
+
+% Numerical Hermitian symmetry
+Rchannel = (Rchannel + Rchannel') / 2;
+
+Rpp = Rchannel(pilotIdx, pilotIdx);
+Rhp = Rchannel(:, pilotIdx);
+
+%% 4. Initialize results
+NMSE_LS_linear = zeros(size(SNRdB));
+NMSE_LS_pchip = zeros(size(SNRdB));
+NMSE_LMMSE = zeros(size(SNRdB));
+
+%% 5. Run simulation for every SNR
+for s = 1:length(SNRdB)
+
+    snrLinear = 10^(SNRdB(s)/10);
+
+    % FFT-domain noise variance for unit-energy pilot symbols.
+    % Corresponding time-domain complex noise variance is / Nfft.
+    noiseVariance = 1 / snrLinear;
+
+    errLinear = 0;
+    errPchip = 0;
+    errLMMSE = 0;
+    trueEnergy = 0;
+
+    for m = 1:Nsym
+
+        %% 5a. Generate one independent Rayleigh channel
+        h = sqrt(tapPower/2) .* ...
+            (randn(L,1) + 1j*randn(L,1));
+
+        Htrue = fft(h, Nfft);
+
+        %% 5b. Generate pilot and QPSK data
+        X = zeros(Nfft,1);
+        X(pilotIdx) = 1;  % Known unit pilots
+
+        bits = randi([0 1], 2, Nd);
+        X(dataIdx) = ((1-2*bits(1,:)) + ...
+            1j*(1-2*bits(2,:))).' / sqrt(2);
+
+        %% 5c. OFDM modulation and cyclic prefix
+        x = ifft(X, Nfft);
+        xCP = [x(end-Ncp+1:end); x];
+
+        %% 5d. Multipath channel and AWGN
+        yClean = filter(h, 1, xCP);
+
+        noise = sqrt(noiseVariance/(2*Nfft)) * ...
+            (randn(size(yClean)) + ...
+             1j*randn(size(yClean)));
+
+        y = yClean + noise;
+
+        %% 5e. Remove CP and perform FFT
+        yUseful = y(Ncp+1:Ncp+Nfft);
+        Y = fft(yUseful, Nfft);
+
+        %% 5f. LS estimation at pilot subcarriers
+        HpilotLS = Y(pilotIdx) ./ X(pilotIdx);
+
+        %% 5g. Interpolate LS estimates
+        Hlinear = interp1(pilotIdx(:), HpilotLS(:), ...
+            (1:Nfft).', "linear", "extrap");
+
+        Hpchip = interp1(pilotIdx(:), HpilotLS(:), ...
+            (1:Nfft).', "pchip", "extrap");
+
+        %% 5h. LMMSE channel estimation
+        % E[H | Ypilot] under the assumed Gaussian channel model
+        regularizedRpp = Rpp + noiseVariance * eye(Np);
+
+        Hlmmse = Rhp * (regularizedRpp \ HpilotLS);
+
+        %% 5i. Accumulate squared estimation errors
+        errLinear = errLinear + ...
+            sum(abs(Hlinear - Htrue).^2);
+
+        errPchip = errPchip + ...
+            sum(abs(Hpchip - Htrue).^2);
+
+        errLMMSE = errLMMSE + ...
+            sum(abs(Hlmmse - Htrue).^2);
+
+        trueEnergy = trueEnergy + sum(abs(Htrue).^2);
+    end
+
+    %% 6. Average normalized estimation error
+    NMSE_LS_linear(s) = errLinear / trueEnergy;
+    NMSE_LS_pchip(s) = errPchip / trueEnergy;
+    NMSE_LMMSE(s) = errLMMSE / trueEnergy;
+
+    
+    fprintf("SNR = %2d dB | LS-linear = %.6e | LS-PCHIP = %.6e | LMMSE = %.6e\n", ...
+        SNRdB(s), NMSE_LS_linear(s), NMSE_LS_pchip(s), NMSE_LMMSE(s));
+end
+
+%% 7. Plot comparison
+figure;
+
+semilogy(SNRdB, NMSE_LS_linear, 'ro-', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'r');
+hold on;
+
+semilogy(SNRdB, NMSE_LS_pchip, 'md--', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'm');
+
+semilogy(SNRdB, NMSE_LMMSE, 'bs-', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'b');
+
+grid on;
+xlabel('SNR (dB)');
+ylabel('Normalized Mean-Square Error (NMSE)');
+title('LS vs LMMSE Channel Estimation in Rayleigh Multipath');
+legend('LS + Linear interpolation', ...
+    'LS + PCHIP interpolation', ...
+    'LMMSE', 'Location', 'southwest');
+
+%% 8. Basic validation checks
+fprintf("\n===== EXPERIMENT 6 VALIDATION =====\n");
+
+if all(isfinite(NMSE_LS_linear)) && ...
+        all(isfinite(NMSE_LS_pchip)) && ...
+        all(isfinite(NMSE_LMMSE))
+    fprintf("Finite NMSE values     : PASSED\n");
+else
+    fprintf("Finite NMSE values     : FAILED\n");
+end
+
+if all(NMSE_LMMSE <= NMSE_LS_linear + 1e-10)
+    fprintf("LMMSE vs LS-linear     : PASSED for tested points\n");
+else
+    fprintf("LMMSE vs LS-linear     : Inspect results\n");
+end
+
+if all(NMSE_LMMSE <= NMSE_LS_pchip + 1e-10)
+    fprintf("LMMSE vs LS-PCHIP      : PASSED for tested points\n");
+else
+    fprintf("LMMSE vs LS-PCHIP      : Inspect results\n");
+end
+
+fprintf("OFDM symbols per SNR   : %d\n", Nsym);
+fprintf("Pilot subcarriers      : %d\n", Np);
+fprintf("Data subcarriers       : %d\n", Nd);
+fprintf("Experiment 6 complete.\n");
+
