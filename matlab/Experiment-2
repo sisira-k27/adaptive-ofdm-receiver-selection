@@ -1,0 +1,114 @@
+
+%% Experiment 2: OFDM over AWGN
+% Fresh experiment: simulated BER vs theoretical QPSK BER
+
+clear;
+clc;
+close all;
+
+rng(7, "twister");
+
+%% 1. System parameters
+Nfft = 64;
+Nsym = 5000;
+bitsPerSymbol = 2;
+
+EbN0dB = 0:2:10;
+numBits = Nfft * Nsym * bitsPerSymbol;
+
+%% 2. Generate bits and map to QPSK
+txBits = randi([0 1], numBits, 1);
+bitPairs = reshape(txBits, bitsPerSymbol, []);
+
+I = 1 - 2 * bitPairs(1, :);
+Q = 1 - 2 * bitPairs(2, :);
+
+txQPSK = (I + 1j * Q) / sqrt(2);
+txQPSK = reshape(txQPSK, Nfft, Nsym);
+
+%% 3. OFDM modulation
+txOFDM = ifft(txQPSK, Nfft, 1);
+
+% Each OFDM symbol has average time-domain power 1/Nfft.
+% The total transmitted energy per OFDM symbol is approximately 1.
+
+%% 4. Simulate AWGN at each Eb/N0
+BER_sim = zeros(size(EbN0dB));
+BER_theory = zeros(size(EbN0dB));
+
+for k = 1:length(EbN0dB)
+
+    EbN0 = 10^(EbN0dB(k) / 10);
+
+    % Complex noise variance per time-domain sample.
+    % Eb = 1/(Nfft * bitsPerSymbol).
+    noiseVariance = 1 / ...
+        (Nfft * bitsPerSymbol * EbN0);
+
+    noise = sqrt(noiseVariance / 2) * ...
+        (randn(size(txOFDM)) + 1j * randn(size(txOFDM)));
+
+    % AWGN channel
+    rxOFDM = txOFDM + noise;
+
+    %% 5. OFDM demodulation
+    rxQPSK = fft(rxOFDM, Nfft, 1);
+
+    %% 6. QPSK demodulation
+    rxBitsMatrix = zeros(2, numel(rxQPSK));
+
+    rxBitsMatrix(1, :) = real(rxQPSK(:)) < 0;
+    rxBitsMatrix(2, :) = imag(rxQPSK(:)) < 0;
+
+    rxBits = rxBitsMatrix(:);
+
+    %% 7. Calculate BER
+    numErrors = sum(txBits ~= rxBits);
+    BER_sim(k) = numErrors / numBits;
+
+    % Theoretical coherent QPSK BER in AWGN
+    BER_theory(k) = 0.5 * erfc(sqrt(EbN0));
+
+    fprintf("Eb/N0 = %2d dB | Errors = %5d | BER = %.6g\n", ...
+        EbN0dB(k), numErrors, BER_sim(k));
+end
+
+%% 8. Plot simulated and theoretical BER
+figure;
+
+semilogy(EbN0dB, BER_theory, ...
+    'k-', 'LineWidth', 1.8);
+hold on;
+
+% Plot only nonzero simulated BER values on the logarithmic axis
+valid = BER_sim > 0;
+
+semilogy(EbN0dB(valid), BER_sim(valid), ...
+    'bo-', 'LineWidth', 1.5, ...
+    'MarkerFaceColor', 'b');
+
+grid on;
+xlabel('E_b/N_0 (dB)');
+ylabel('Bit Error Rate (BER)');
+title('OFDM over AWGN: Simulated vs Theoretical QPSK BER');
+
+legend('Theoretical QPSK', 'Simulated OFDM', ...
+    'Location', 'southwest');
+
+%% 9. Print validation summary
+fprintf("\n===== EXPERIMENT 2 SUMMARY =====\n");
+fprintf("FFT size              : %d\n", Nfft);
+fprintf("OFDM symbols          : %d\n", Nsym);
+fprintf("Bits per SNR point    : %d\n", numBits);
+fprintf("SNR range             : %d to %d dB\n", ...
+    EbN0dB(1), EbN0dB(end));
+
+if all(diff(BER_sim) <= 0)
+    fprintf("BER trend check       : PASSED (non-increasing)\n");
+else
+    fprintf(["BER trend check       : Some upward fluctuations; " ...
+        "inspect statistical variation.\n"]);
+end
+
+fprintf("Experiment complete. Inspect the BER plot.\n");
+
