@@ -1,0 +1,209 @@
+
+%% Experiment 7: Channel-Model Mismatch in OFDM
+% Compare:
+% 1. LS with linear interpolation
+% 2. LMMSE with correct channel covariance
+% 3. LMMSE with mismatched channel covariance
+%
+% All methods use identical channel realizations and received pilots.
+% True channel information is used only for offline evaluation.
+
+clear;
+clc;
+close all;
+
+rng(73, "twister");
+
+%% 1. OFDM parameters
+Nfft = 64;
+Ncp = 8;
+Nsym = 2000;
+SNRdB = 0:5:30;
+
+pilotSpacing = 4;
+pilotIdx = 1:pilotSpacing:Nfft;
+dataIdx = setdiff(1:Nfft, pilotIdx);
+
+Np = length(pilotIdx);
+Nd = length(dataIdx);
+L = 3;
+
+assert(Ncp >= L-1, ...
+    "Cyclic prefix must cover the channel memory.");
+
+%% 2. Define true and assumed channel statistics
+
+% True channel power-delay profile
+pTrue = [1; 0.5; 0.25];
+pTrue = pTrue / sum(pTrue);
+
+% Deliberately mismatched assumed profile:
+% the relative powers are reversed
+pMismatch = [0.25; 0.5; 1];
+pMismatch = pMismatch / sum(pMismatch);
+
+% Frequency-domain channel transformation matrix
+subcarrierIndex = (0:Nfft-1).';
+tapIndex = 0:L-1;
+
+Fchannel = exp(-1j*2*pi/Nfft * ...
+    (subcarrierIndex * tapIndex));
+
+% Correct channel covariance
+Rtrue = Fchannel * diag(pTrue) * Fchannel';
+
+% Mismatched channel covariance
+Rwrong = Fchannel * diag(pMismatch) * Fchannel';
+
+% Extract pilot-related covariance matrices
+RppTrue = Rtrue(pilotIdx, pilotIdx);
+RhpTrue = Rtrue(:, pilotIdx);
+
+RppWrong = Rwrong(pilotIdx, pilotIdx);
+RhpWrong = Rwrong(:, pilotIdx);
+
+%% 3. Initialize performance metrics
+NMSE_LS = zeros(size(SNRdB));
+NMSE_LMMSE_correct = zeros(size(SNRdB));
+NMSE_LMMSE_mismatch = zeros(size(SNRdB));
+
+%% 4. Simulation across SNR values
+for s = 1:length(SNRdB)
+
+    snrLinear = 10^(SNRdB(s)/10);
+
+    % Frequency-domain noise variance
+    noiseVariance = 1 / snrLinear;
+
+    % Accumulate squared errors over all symbols
+    errLS = 0;
+    errCorrect = 0;
+    errMismatch = 0;
+    trueEnergy = 0;
+
+    for m = 1:Nsym
+
+        %% 4a. Generate true Rayleigh channel
+        h = sqrt(pTrue/2) .* ...
+            (randn(L,1) + 1j*randn(L,1));
+
+        Htrue = fft(h, Nfft);
+
+        %% 4b. Generate pilot and data symbols
+        X = zeros(Nfft, 1);
+        X(pilotIdx) = 1;
+
+        bits = randi([0 1], 2, Nd);
+
+        X(dataIdx) = ((1 - 2*bits(1,:)) + ...
+            1j*(1 - 2*bits(2,:))).' / sqrt(2);
+
+        %% 4c. OFDM modulation and cyclic prefix
+        x = ifft(X, Nfft);
+        xCP = [x(end-Ncp+1:end); x];
+
+        %% 4d. Multipath channel and AWGN
+        yClean = filter(h, 1, xCP);
+
+        noise = sqrt(noiseVariance/(2*Nfft)) * ...
+            (randn(size(yClean)) + ...
+             1j*randn(size(yClean)));
+
+        y = yClean + noise;
+
+        %% 4e. Remove cyclic prefix and perform FFT
+        yUseful = y(Ncp+1:Ncp+Nfft);
+        Y = fft(yUseful, Nfft);
+
+        %% 4f. LS estimates at pilot locations
+        HpilotLS = Y(pilotIdx) ./ X(pilotIdx);
+
+        %% 4g. LS with linear interpolation
+        Hls = interp1(pilotIdx(:), HpilotLS(:), ...
+            (1:Nfft).', "linear", "extrap");
+
+        %% 4h. LMMSE with correct covariance
+        Hcorrect = RhpTrue * ...
+            ((RppTrue + noiseVariance*eye(Np)) \ HpilotLS);
+
+        %% 4i. LMMSE with mismatched covariance
+        Hmismatch = RhpWrong * ...
+            ((RppWrong + noiseVariance*eye(Np)) \ HpilotLS);
+
+        %% 4j. Accumulate estimation errors
+        errLS = errLS + sum(abs(Hls - Htrue).^2);
+
+        errCorrect = errCorrect + ...
+            sum(abs(Hcorrect - Htrue).^2);
+
+        errMismatch = errMismatch + ...
+            sum(abs(Hmismatch - Htrue).^2);
+
+        trueEnergy = trueEnergy + sum(abs(Htrue).^2);
+    end
+
+    %% 5. Calculate NMSE
+    NMSE_LS(s) = errLS / trueEnergy;
+
+    NMSE_LMMSE_correct(s) = errCorrect / trueEnergy;
+
+    NMSE_LMMSE_mismatch(s) = errMismatch / trueEnergy;
+
+   
+    fprintf('SNR = %2d dB | LS = %.6e | Correct LMMSE = %.6e | Mismatched LMMSE = %.6e\n', ...
+        SNRdB(s), NMSE_LS(s), NMSE_LMMSE_correct(s), NMSE_LMMSE_mismatch(s));
+end
+
+%% 6. Plot NMSE comparison
+figure;
+
+semilogy(SNRdB, NMSE_LS, 'ro-', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'r');
+hold on;
+
+semilogy(SNRdB, NMSE_LMMSE_correct, 'bs-', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'b');
+
+semilogy(SNRdB, NMSE_LMMSE_mismatch, 'md--', ...
+    'LineWidth', 1.5, 'MarkerFaceColor', 'm');
+
+grid on;
+xlabel('SNR (dB)');
+ylabel('Normalized Mean-Square Error (NMSE)');
+title('OFDM Channel Estimation Under Model Mismatch');
+
+legend('LS + Linear Interpolation', ...
+    'LMMSE: Correct Covariance', ...
+    'LMMSE: Mismatched Covariance', ...
+    'Location', 'southwest');
+
+%% 7. Validation
+fprintf("\n===== EXPERIMENT 7 VALIDATION =====\n");
+
+allNMSE = [NMSE_LS, ...
+    NMSE_LMMSE_correct, NMSE_LMMSE_mismatch];
+
+if all(isfinite(allNMSE)) && all(allNMSE >= 0)
+    fprintf("Finite nonnegative NMSE : PASSED\n");
+else
+    fprintf("Finite nonnegative NMSE : FAILED\n");
+end
+
+if all(NMSE_LMMSE_correct <= NMSE_LS + 1e-10)
+    fprintf("Correct LMMSE vs LS     : PASSED for tested points\n");
+else
+    fprintf("Correct LMMSE vs LS     : Inspect results\n");
+end
+
+if any(abs(NMSE_LMMSE_mismatch - ...
+        NMSE_LMMSE_correct) > 1e-8)
+    fprintf("Mismatch effect         : DETECTED\n");
+else
+    fprintf("Mismatch effect         : Small or undetected\n");
+end
+
+fprintf("OFDM symbols per SNR    : %d\n", Nsym);
+fprintf("Pilot subcarriers       : %d\n", Np);
+fprintf("Data subcarriers        : %d\n", Nd);
+fprintf("Experiment 7 complete.\n");
+
